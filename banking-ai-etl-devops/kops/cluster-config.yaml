@@ -1,0 +1,20 @@
+# EXAMPLE ONLY — review and adapt to your KOPS version, AWS account and network.
+# Do not apply this file blindly. KOPS cluster creation may create billable resources.
+# For the learning cluster, use a unique cluster name and a dedicated S3 state store.
+apiVersion: kops.k8s.io/v1alpha2
+kind: Cluster
+metadata:
+  name: banking.k8s.local
+spec:
+  cloudProvider: aws
+  configBase: s3://REPLACE_WITH_KOPS_STATE_BUCKET/banking.k8s.local
+  networking:
+    # Select and configure a supported KOPS networking plugin/version.
+    # This is a planning placeholder, not a complete network configuration.
+    calico: {}
+  subnets: []
+  topology:
+    masters: public
+    nodes: public
+  # Add reviewed master/node instance groups, zones, IAM and network settings
+  # using the KOPS version-specific schema before creating resources.

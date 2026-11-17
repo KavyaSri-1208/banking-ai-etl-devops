@@ -1,0 +1,145 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        AWS_DEFAULT_REGION = "${AWS_REGION}"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        IMAGE_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}:${BUILD_NUMBER}"
+        SONARQUBE_ENV = "sonarqube"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'python3 -m pip install --user -r requirements.txt'
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                sh 'python3 -m pytest -q'
+            }
+            post {
+                always { junit allowEmptyResults: true, testResults: '**/junit.xml' }
+            }
+        }
+
+        stage('Legacy ETL and Reconciliation') {
+            steps {
+                sh '''
+                    python3 -m legacy_etl.legacy_etl
+                    python3 -m pyspark_etl.main
+                    python3 -m reconciliation.compare_results
+                '''
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv("${SONARQUBE_ENV}") {
+                    sh 'sonar-scanner'
+                }
+            }
+        }
+
+        stage('SonarQube Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    docker build -f docker/Dockerfile.api -t ${IMAGE_URI} .
+                    docker build -f docker/Dockerfile.frontend -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}-frontend:${BUILD_NUMBER} .
+                    docker build -f docker/Dockerfile.etl -t ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}-etl:${BUILD_NUMBER} .
+                '''
+            }
+        }
+
+        // Future option only. Nexus is intentionally not installed or configured.
+        // stage('Nexus Repository') {
+        //     steps {
+        //         echo 'Enable this stage only if Nexus is introduced later.'
+        //     }
+        // }
+
+        stage('Push Images to AWS ECR') {
+            steps {
+                sh '''
+                    aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                    docker push ${IMAGE_URI}
+                    docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}-frontend:${BUILD_NUMBER}
+                    docker push ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPOSITORY}-etl:${BUILD_NUMBER}
+                '''
+            }
+        }
+
+        stage('Deploy DEV') {
+            steps {
+                sh '''
+                    kubectl apply -f kubernetes/namespaces/dev.yaml
+                    sed "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" kubernetes/api/deployment.yaml | kubectl apply -n banking-dev -f -
+                    kubectl apply -n banking-dev -f kubernetes/api/service.yaml
+                    kubectl rollout status deployment/banking-api -n banking-dev --timeout=180s
+                '''
+            }
+        }
+
+        stage('DEV Health Check') {
+            steps {
+                sh 'kubectl get pods -n banking-dev'
+            }
+        }
+
+        stage('UAT Approval') {
+            steps {
+                input message: 'Approve deployment to UAT?', ok: 'Deploy UAT'
+            }
+        }
+
+        stage('Deploy UAT') {
+            steps {
+                sh '''
+                    kubectl apply -f kubernetes/namespaces/uat.yaml
+                    sed "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" kubernetes/api/deployment.yaml | kubectl apply -n banking-uat -f -
+                    kubectl apply -n banking-uat -f kubernetes/api/service.yaml
+                    kubectl rollout status deployment/banking-api -n banking-uat --timeout=180s
+                '''
+            }
+        }
+
+        stage('PROD Approval') {
+            steps {
+                input message: 'Approve demo deployment to PROD namespace?', ok: 'Deploy PROD'
+            }
+        }
+
+        stage('Deploy PROD') {
+            steps {
+                sh '''
+                    kubectl apply -f kubernetes/namespaces/prod.yaml
+                    sed "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" kubernetes/api/deployment.yaml | kubectl apply -n banking-prod -f -
+                    kubectl apply -n banking-prod -f kubernetes/api/service.yaml
+                    kubectl rollout status deployment/banking-api -n banking-prod --timeout=180s
+                '''
+            }
+        }
+    }
+
+    post {
+        always { echo "Pipeline completed: ${currentBuild.currentResult}" }
+    }
+}
