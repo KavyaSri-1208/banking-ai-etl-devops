@@ -51,3 +51,4 @@ id_ed25519
 # Logs
 *.log
 logs/
+.env
