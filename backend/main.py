@@ -23,6 +23,19 @@ def summary():
     import pandas as pd
     return {"records": pd.read_csv(result_file).to_dict(orient="records")}
 
+@app.get("/transactions")
+def transactions():
+    data_dir = Path(os.getenv("DATA_DIR", Path(__file__).resolve().parents[1] / "data"))
+    result_file = data_dir / "processed" / "clean_transactions.csv"
+
+    if not result_file.exists():
+        return {"message": "No transactions yet. Run POST /etl/run first."}
+
+    import pandas as pd
+    return {
+        "records": pd.read_csv(result_file).to_dict(orient="records")
+    }
+
 @app.post("/etl/run")
 def run_etl():
     try:

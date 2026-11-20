@@ -1,0 +1,1 @@
+Local demo response: compare the legacy and PySpark implementations for input schema, null handling, numeric casting, business filters, date normalization, grouping and totals. Run pytest and reconciliation before accepting any migration. Configure OPENAI_API_KEY securely to enable an LLM.
